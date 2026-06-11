@@ -1,0 +1,422 @@
+---
+name: use-directinference
+description: Integrate DirectInference into a codebase — swap an existing OpenAI, Anthropic, or Gemini integration to the DirectInference drop-in endpoint, or wire a fresh LLM call through it. Use whenever the user mentions DirectInference and wants their LLM calls on it — e.g. "switch to DirectInference", "point my OpenAI calls at DirectInference", "use DirectInference instead of Anthropic", "add an LLM call via DirectInference", or "swap our LLM to DirectInference". Only input required is a DirectInference API key (an `llm_live_*` credential).
+---
+
+# use-directinference
+
+DirectInference is one endpoint that speaks three wire formats — OpenAI, Anthropic, and Gemini. The whole integration contract:
+
+1. Point the base URL at `https://api.directinference.com` (exact path per SDK — table below).
+2. Authenticate with one `llm_live_*` key. The same key works on every surface.
+3. Keep every `model` string the code already sends — any id is accepted (legacy, renamed, or not-yet-released, never a 404) and is echoed back verbatim in the response.
+
+Nothing else changes: prompts, streaming, tools/function calling, JSON mode, image input, PDF input, sampling parameters, and error handling all stay as they are. DirectInference serves each request with the right capability automatically; the caller never learns or manages the model behind it. **Do not describe internal model selection or backends to the user** — the one visible signal is the request type (see Verify).
+
+For anything beyond this skill, the docs are written for agents: `https://docs.directinference.com` — machine-readable index at `https://docs.directinference.com/llms.txt` (expanded: `https://directinference.com/llms-full.txt`).
+
+## Base URLs
+
+| SDK shape in the user's code | Base URL to set |
+|---|---|
+| OpenAI-compatible — `openai`, `@ai-sdk/openai`, LangChain `ChatOpenAI`, LiteLLM `openai/*`, direct `api.openai.com` calls | `https://api.directinference.com/di/v1` |
+| Anthropic — `anthropic`, `@anthropic-ai/sdk`, `@ai-sdk/anthropic`, LangChain `ChatAnthropic`, direct `api.anthropic.com` calls | `https://api.directinference.com/di` *(the SDK appends `/v1/messages` itself — do not include `/v1`)* |
+| Gemini — unified Google GenAI SDK (`from google import genai`, `@google/genai`) | `https://api.directinference.com/di` *(the SDK appends `/v1beta/models/{model}:generateContent` itself — do not include `/v1beta`)* |
+| Gemini — Vercel AI SDK (`@ai-sdk/google`) | `https://api.directinference.com/di/v1beta` *(this provider's `baseURL` already includes `/v1beta`)* |
+
+Two hosts, two jobs — don't mix them up when editing:
+
+- `api.directinference.com` — API only (its `/` serves nothing). All code points here.
+- `app.directinference.com` — the dashboard portal (API keys, usage, billing). It also still serves the same API paths for older integrations, so if you find working calls pointed at `https://app.directinference.com/di/...`, they are fine — prefer `api.` for anything you write or change, and never "fix" portal links to `api.`.
+
+Auth: the OpenAI surface takes `Authorization: Bearer <key>`; the Anthropic surface takes `x-api-key: <key>` (Bearer also accepted); the Gemini surface takes `x-goog-api-key: <key>` or `?key=<key>`. Each SDK sends its own header automatically — just give it the key.
+
+## What the endpoint serves
+
+| Served | Path |
+|---|---|
+| Chat completions, incl. SSE streaming | `POST /di/v1/chat/completions` |
+| Anthropic Messages, incl. streaming | `POST /di/v1/messages` |
+| Anthropic token counting | `POST /di/v1/messages/count_tokens` |
+| Model list (OpenAI shape; Anthropic shape with `anthropic-version` header) | `GET /di/v1/models` |
+| Gemini generate / stream / count / list | `POST /di/v1beta/models/{model}:generateContent`, `:streamGenerateContent?alt=sse`, `:countTokens`; `GET /di/v1beta/models` |
+
+**Not served** — any other path 404s. Handle these call sites explicitly instead of breaking them:
+
+| Call shape in the code | What to do |
+|---|---|
+| OpenAI Responses API — `client.responses.create(...)`, `POST /responses` | Two options: rewrite the call site to Chat Completions (different request/response field names — a real edit, confirm with the user), or leave those calls on OpenAI with their original key. In Vercel AI SDK ≥5 this is trivial instead: `provider("id")` defaults to the Responses API, so use `provider.chat("id")` — see the recipe. |
+| Embeddings — `client.embeddings.create(...)`, `OpenAIEmbeddings` | Keep on the original provider with its original key (split clients if needed). |
+| Images, audio, moderations, batches, files, fine-tuning | Keep on the original provider. |
+
+A migration is still worth doing when only the chat/messages traffic moves — say so in the plan rather than leaving the repo silently half-swapped.
+
+## What you need from the user
+
+| Input | Required | Default |
+|---|---|---|
+| DirectInference API key (`llm_live_*`) — issued on the portal's API Keys page: `https://app.directinference.com/api-keys` | yes | — |
+| Env var name to store the key under | no | `DIRECTINFERENCE_API_KEY` |
+| Whether to remove or keep the old provider's key/env | no | keep — rollback safety, and still required if embeddings/images stay behind |
+
+If the key is not in the conversation or already in the project's env, ask for it before touching files. No account yet? Signup is free at `https://app.directinference.com`; usage is pay-as-you-go against a credit balance. Never write a key into tracked code — put it in `.env`/`.env.local`/shell exports.
+
+## Procedure
+
+Follow these four steps in order. Steps 1 and 2 are read-only — never start editing in step 1.
+
+### Step 1 — Inventory the existing integration
+
+From the repo root, run these greps and collect every hit:
+
+```bash
+# OpenAI SDK and OpenAI-compat layers (Python + JS/TS)
+grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.mjs' --include='*.cjs' \
+  -E 'from openai|import openai|new OpenAI\(|OpenAI\(|@ai-sdk/openai|createOpenAI|ChatOpenAI' .
+
+# Anthropic SDK (Python + JS/TS)
+grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.mjs' --include='*.cjs' \
+  -E 'from anthropic|import anthropic|new Anthropic\(|Anthropic\(|@anthropic-ai/sdk|@ai-sdk/anthropic|createAnthropic|ChatAnthropic' .
+
+# Gemini / Google GenAI
+grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.mjs' --include='*.cjs' \
+  -E 'google\.generativeai|from google import genai|GoogleGenAI|GenerativeModel|@google/genai|@google/generative-ai|@ai-sdk/google|ChatGoogleGenerativeAI' .
+
+# Wrappers and routers
+grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+  -E 'litellm|langchain' .
+
+# Call shapes DirectInference does NOT serve (handle per the table above)
+grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+  -E 'responses\.create|client\.responses|embeddings\.create|OpenAIEmbeddings|images\.generate|audio\.(speech|transcriptions)|moderations' .
+
+# Direct HTTP to provider hosts (and any existing DirectInference usage)
+grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.sh' --include='*.json' \
+  -E 'api\.openai\.com|api\.anthropic\.com|generativelanguage\.googleapis\.com|directinference\.com' .
+
+# Provider key / base-URL env vars
+grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.env*' --include='*.json' --include='*.yaml' --include='*.yml' \
+  -E 'OPENAI_API_KEY|OPENAI_BASE_URL|OPENAI_API_BASE|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|GOOGLE_API_KEY|GEMINI_API_KEY|DIRECTINFERENCE_API_KEY' .
+```
+
+For each hit note: file and line; where the client is constructed (the line taking `api_key=` / `apiKey:` / `base_url=` / `baseURL:`); which env var the key reads from; which model strings appear; and any hits from the "not served" grep.
+
+### Step 2 — Choose the strategy and confirm
+
+Two ways to apply the swap:
+
+- **Constructor edit (default for application code).** Set `base_url` and `api_key` where the client is built — one or two lines per call site, visible in the diff, independent of deploy environment. Use the recipes in step 3.
+- **Env-only (zero code edits).** The official OpenAI and Anthropic SDKs read their base URL from the environment, so when clients are constructed bare (`OpenAI()` / `new Anthropic()` with no explicit `base_url`/`api_key` arguments), the swap is pure configuration. This is also how you point CLIs and coding agents you don't own the code of:
+
+  ```bash
+  # OpenAI SDKs and most OpenAI-compatible tools
+  export OPENAI_BASE_URL="https://api.directinference.com/di/v1"
+  export OPENAI_API_KEY="$DIRECTINFERENCE_API_KEY"
+
+  # Anthropic SDKs and Anthropic-compatible tools
+  export ANTHROPIC_BASE_URL="https://api.directinference.com/di"
+  export ANTHROPIC_API_KEY="$DIRECTINFERENCE_API_KEY"
+  ```
+
+  Only choose env-only when every deploy environment (local, CI, prod) gets the vars; otherwise it "works on my machine" and silently falls back to the old provider elsewhere.
+
+Then summarize back to the user before editing:
+
+- The files that will change (with line numbers), or the env vars to set.
+- The chosen env var name (default `DIRECTINFERENCE_API_KEY`).
+- That all `model=` strings, prompts, parameters, streaming, and tool definitions stay verbatim.
+- Any call sites DirectInference does not serve (Responses API, embeddings, images/audio) and how each will be handled.
+
+For a small inventory (≤2 files) you can proceed without an explicit confirmation prompt. For broader changes — or any Responses-API rewrite — confirm first.
+
+### Step 3 — Apply the swap
+
+Use the recipes below. Keep the change minimal: ideally a one- or two-line edit per call site.
+
+#### Recipe — Python, OpenAI SDK
+
+```python
+import os
+from openai import OpenAI
+
+# before
+# client = OpenAI()                                  # reads OPENAI_API_KEY, hits api.openai.com
+
+# after
+client = OpenAI(
+    base_url="https://api.directinference.com/di/v1",
+    api_key=os.environ["DIRECTINFERENCE_API_KEY"],
+)
+```
+
+`client.chat.completions.create(model="gpt-5.5-mini", ...)` is unchanged. If the existing code already passes `base_url=` and `api_key=`, replace only those two values.
+
+#### Recipe — Node / TypeScript, OpenAI SDK
+
+```ts
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "https://api.directinference.com/di/v1",
+  apiKey: process.env.DIRECTINFERENCE_API_KEY!,
+});
+```
+
+#### Recipe — Python, Anthropic SDK
+
+```python
+import os
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="https://api.directinference.com/di",   # SDK appends /v1/messages
+    api_key=os.environ["DIRECTINFERENCE_API_KEY"],
+)
+```
+
+`client.messages.create(model="claude-sonnet-4-6", ...)` is unchanged, including `count_tokens`.
+
+#### Recipe — Node / TypeScript, Anthropic SDK
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "https://api.directinference.com/di",     // SDK appends /v1/messages
+  apiKey: process.env.DIRECTINFERENCE_API_KEY!,
+});
+```
+
+#### Recipe — Vercel AI SDK
+
+For `@ai-sdk/openai` — **always select the chat surface explicitly**: in AI SDK ≥5, `provider("id")` defaults to the OpenAI Responses API, which DirectInference does not serve.
+
+```ts
+import { createOpenAI } from "@ai-sdk/openai";
+const directinference = createOpenAI({
+  baseURL: "https://api.directinference.com/di/v1",
+  apiKey: process.env.DIRECTINFERENCE_API_KEY!,
+});
+
+// Update call sites: openai("gpt-5.5-mini") -> directinference.chat("gpt-5.5-mini")
+```
+
+(Equivalent alternative: `createOpenAICompatible({ name: "directinference", baseURL, apiKey })` from `@ai-sdk/openai-compatible`, whose default is chat completions.)
+
+For `@ai-sdk/anthropic`:
+
+```ts
+import { createAnthropic } from "@ai-sdk/anthropic";
+const directinference = createAnthropic({
+  baseURL: "https://api.directinference.com/di",
+  apiKey: process.env.DIRECTINFERENCE_API_KEY!,
+});
+// anthropic("claude-sonnet-4-6") -> directinference("claude-sonnet-4-6")
+```
+
+#### Recipe — LangChain
+
+Python:
+
+```python
+from langchain_openai import ChatOpenAI
+llm = ChatOpenAI(
+    base_url="https://api.directinference.com/di/v1",
+    api_key=os.environ["DIRECTINFERENCE_API_KEY"],
+    model="gpt-5.5-mini",   # unchanged
+)
+
+from langchain_anthropic import ChatAnthropic
+llm = ChatAnthropic(
+    base_url="https://api.directinference.com/di",
+    api_key=os.environ["DIRECTINFERENCE_API_KEY"],
+    model="claude-sonnet-4-6",   # unchanged
+)
+```
+
+JavaScript: `new ChatOpenAI({ apiKey, configuration: { baseURL: "https://api.directinference.com/di/v1" } })`; `new ChatAnthropic({ apiKey, anthropicApiUrl: "https://api.directinference.com/di" })`.
+
+#### Recipe — LiteLLM
+
+Easiest path is env-based, since LiteLLM honours each provider's standard base-url env:
+
+```bash
+export OPENAI_API_BASE="https://api.directinference.com/di/v1"
+export OPENAI_API_KEY="$DIRECTINFERENCE_API_KEY"
+export ANTHROPIC_API_BASE="https://api.directinference.com/di"
+export ANTHROPIC_API_KEY="$DIRECTINFERENCE_API_KEY"
+```
+
+Or per call:
+
+```python
+litellm.completion(
+    model="openai/gpt-5.5-mini",                      # keep the "openai/" prefix
+    api_base="https://api.directinference.com/di/v1",
+    api_key=os.environ["DIRECTINFERENCE_API_KEY"],
+    messages=[...],
+)
+```
+
+For Anthropic-prefixed models use `model="anthropic/claude-sonnet-4-6"` and `api_base="https://api.directinference.com/di/v1"` (LiteLLM posts to `{api_base}/messages` directly, not via the Anthropic SDK).
+
+#### Recipe — Gemini native (Google GenAI SDK)
+
+A true one-line drop-in: change the base URL and the key, keep the `gemini-*` model id. `generateContent`, `streamGenerateContent` (with `?alt=sse`), `countTokens`, function calling, `inlineData` images, JSON mode (`responseMimeType` / `responseSchema`), and thinking config all work unchanged.
+
+Python — unified SDK (`from google import genai`):
+
+```python
+import os
+from google import genai
+from google.genai import types
+
+client = genai.Client(
+    api_key=os.environ["DIRECTINFERENCE_API_KEY"],
+    http_options=types.HttpOptions(base_url="https://api.directinference.com/di"),
+)
+resp = client.models.generate_content(model="gemini-2.5-flash", contents="Hello")
+```
+
+The SDK sends the key as `x-goog-api-key` and appends `/v1beta/models/{model}:generateContent` itself, so the base URL must NOT include `/v1beta`.
+
+Node / TypeScript — unified SDK (`@google/genai`):
+
+```ts
+import { GoogleGenAI } from "@google/genai";
+
+const ai = new GoogleGenAI({
+  apiKey: process.env.DIRECTINFERENCE_API_KEY!,
+  httpOptions: { baseUrl: "https://api.directinference.com/di" },
+});
+```
+
+Vercel AI SDK (`@ai-sdk/google`) — this provider's `baseURL` already includes `/v1beta`:
+
+```ts
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+const google = createGoogleGenerativeAI({
+  baseURL: "https://api.directinference.com/di/v1beta",
+  apiKey: process.env.DIRECTINFERENCE_API_KEY!,
+});
+```
+
+The deprecated `google-generativeai` / `@google/generative-ai` SDKs do not expose a clean path-prefixed base URL; migrate those call sites to the unified SDK above (same request/response shape), or use the OpenAI or Anthropic recipe — every surface accepts a `gemini-*` model id.
+
+#### Recipe — direct curl / fetch
+
+```bash
+# OpenAI shape
+curl https://api.directinference.com/di/v1/chat/completions \
+  -H "Authorization: Bearer $DIRECTINFERENCE_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-5.5-mini","messages":[{"role":"user","content":"hi"}]}'
+
+# Anthropic shape
+curl https://api.directinference.com/di/v1/messages \
+  -H "x-api-key: $DIRECTINFERENCE_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'
+
+# Gemini shape
+curl "https://api.directinference.com/di/v1beta/models/gemini-2.5-flash:generateContent" \
+  -H "x-goog-api-key: $DIRECTINFERENCE_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}'
+```
+
+Update `fetch` / `axios` / `requests` calls the same way: replace the host and the auth header, leave the body untouched.
+
+#### Recipe — fresh integration (no existing LLM code)
+
+Use the stock OpenAI SDK unless the project already standardizes on another:
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://api.directinference.com/di/v1",
+    api_key=os.environ["DIRECTINFERENCE_API_KEY"],
+)
+resp = client.chat.completions.create(
+    model="di",   # any id works; "di" is neutral and lets the request shape decide
+    messages=[{"role": "user", "content": "..."}],
+)
+print(resp.choices[0].message.content)
+```
+
+There is no model catalog to browse or keep current — the model id is read as intent, so send `"di"` or whatever id the team is used to.
+
+#### Optional, after the swap works
+
+Each is one line; offer them, don't push them:
+
+- **Effort** — one knob to bias any call toward cost/latency or quality: request header `X-DI-Effort: fast | minimal | low | medium | high | xhigh | max` (omit for auto), settable once as an SDK default header; `?effort=` query param also works. Existing `reasoning_effort` / thinking-budget fields are already read as the effort signal. Details: `https://docs.directinference.com/effort/`
+- **Per-app usage attribution** — send `X-Title: <app name>` to segment the usage dashboard by application (otherwise it falls back to the API key's name). Details: `https://docs.directinference.com/usage/`
+- **Prompt caching** — `cache_control: {"type": "ephemeral"}` breakpoints on a stable prefix cut cost and time-to-first-token; native on the Anthropic surface, accepted on OpenAI-surface content parts too. Details: `https://docs.directinference.com/caching/`
+- **Spend caps** — suggest the user set a per-key or account cap at `https://app.directinference.com/api-keys` / billing settings; the cap returns a deliberate `402` when reached. Details: `https://docs.directinference.com/spend/`
+
+#### Env files and config
+
+If the project has `.env.example` / `.env.template` / similar, add a placeholder line:
+
+```
+DIRECTINFERENCE_API_KEY=
+```
+
+Do not write the real key anywhere tracked by git. Tell the user where to put it (`.env`, shell rc, CI secret store) but leave the actual placement to them unless they ask you to do it.
+
+### Step 4 — Verify
+
+Use the `verify.sh` script bundled with this skill. It pings every surface and asserts two things per call: the response echoes the model id you sent, and the response carries the `X-DI-Request-Type` header. The header is the definitive signal — only DirectInference sets it, so its presence proves the request didn't quietly land on the original provider (model echo alone can false-pass for ids the original provider also serves).
+
+```bash
+DIRECTINFERENCE_API_KEY=llm_live_... bash skills/use-directinference/verify.sh
+```
+
+Adjust the path to wherever the skill lives in the user's project. If the script is not at hand, run the curl commands from the "direct curl / fetch" recipe with `-D -` and check each response for `x-di-request-type:` plus a `model` field equal to the id you sent.
+
+Successful output looks like:
+
+```
+base_url : https://api.directinference.com/di/v1
+
+PASS  auth + model list — GET /di/v1/models
+PASS  openai shape — model echoed (gpt-5.5-mini), request type: flash
+PASS  anthropic shape — model echoed (claude-sonnet-4-6), request type: flash
+PASS  streaming — OpenAI SSE completed, request type: flash
+PASS  gemini shape — model echoed (gemini-2.5-flash), request type: flash
+
+PASSED  5/5 checks
+```
+
+(The request-type values vary with the prompt — any value passes; the assertion is presence.)
+
+After `verify.sh` passes, run whatever test command the project already has (`pytest`, `pnpm test`, `npm test`, etc.) to confirm the swap holds at the SDK level. Do not invent new tests — use what the project already ships.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `401` invalid api key | Wrong key, or stray whitespace / quotes in the env value | Re-issue at `https://app.directinference.com/api-keys`; check `printenv DIRECTINFERENCE_API_KEY \| cat -A` |
+| `402` | Balance exhausted or a spend cap reached — deliberate, will not clear on retry | Top up / raise the cap at `https://app.directinference.com/billing`, then retry |
+| `404` on `/v1/messages` from the Anthropic SDK | Base URL was set to `…/di/v1` instead of `…/di` | Drop the trailing `/v1` — the SDK appends it itself |
+| `404` on `/chat/completions` from the OpenAI SDK | Base URL is missing `/di/v1` | Full base URL is `https://api.directinference.com/di/v1` |
+| `404` on `/responses` | OpenAI Responses API is not served | Use Chat Completions; in Vercel AI SDK use `provider.chat("id")` |
+| `404` on `/embeddings` | Embeddings are not served | Keep embeddings calls on the original provider |
+| `404` on a `gemini-*` id from the unified Google GenAI SDK | Base URL included `/v1beta` (the SDK appends it too → `…/v1beta/v1beta/…`) | Use `…/di` for `google-genai` / `@google/genai`; `…/di/v1beta` only for `@ai-sdk/google` |
+| Response has no `X-DI-Request-Type` header, or `model` is not the id you sent | The call landed on the old provider, or on `/v1/*` instead of `/di/v1/*` | Check the base URL actually took effect (env loaded? config cached?) and that the path includes `/di` |
+| `413` | Request body over the 32 MB limit | Trim the payload, e.g. drop oversized inline files |
+| `429` | Pressure on the endpoint serving the request — transient | Retry with exponential backoff and jitter |
+| Streaming hangs in production but works locally | Reverse proxy (nginx, Cloudflare, ALB) is buffering SSE | Disable response buffering for the DirectInference route |
+| Existing test suite fails because it mocks `api.openai.com` | The host changed | Update the mock host to `api.directinference.com` — mock URL paths stay the same |
+
+## Notes for the agent
+
+- Treat DirectInference as a black box: drop in the URL, drop in the key, model strings preserved. Never name or guess the model/provider behind a response — the request type (the `X-DI-Request-Type` value: `flash`, `pro`, `reason`, `code`, `json`, `long`, `vision`, `document`) is the only classification fact you may surface.
+- Never put the API key in tracked files. If you see one in code or in committed config, flag it and ask the user where to relocate it before continuing.
+- Rollback is trivial: revert the base URL and key. No other code changes are involved.
+- Unknown or future model ids are accepted; you do not need to maintain a model-id allowlist when migrating.
+- Configuring a settings form (Cursor, an IDE, a "bring your own model" screen) rather than code? Field-by-field instructions: `https://docs.directinference.com/custom-providers/`. Pointing a CLI/coding agent via env vars: `https://docs.directinference.com/agents/`.
