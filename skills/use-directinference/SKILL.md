@@ -354,7 +354,7 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-There is no model catalog to browse or keep current — the model id is read as intent, so send `"di"` or whatever id the team is used to.
+The model catalog is tiny and stable — `di`, plus `di-fast` / `di-max` (the *same* model with effort pinned low/high, there for tools with fast/smart model slots). The model id is read as intent, so send `"di"`, a pinned id, or whatever id the team is used to.
 
 #### Recipe — config-driven model routing (factories, registries, `provider:model` strings)
 
@@ -384,7 +384,7 @@ def resolve_client(spec: str):
 
 Each is one line; offer them, don't push them:
 
-- **Effort** — one knob to bias any call toward cost/latency or quality: request header `X-DI-Effort: fast | minimal | low | medium | high | xhigh | max` (omit for auto; `none` is accepted as an alias for `fast`), settable once as an SDK default header; `?effort=` query param also works. Existing `reasoning_effort` / thinking-budget fields are already read as the effort signal. Details: `https://docs.directinference.com/effort/`
+- **Effort** — one knob to bias any call toward cost/latency or quality: request header `X-DI-Effort: fast | minimal | low | medium | high | xhigh | max` (omit for auto; `none` is accepted as an alias for `fast`), settable once as an SDK default header; `?effort=` query param also works. Existing `reasoning_effort` / thinking-budget fields are already read as the effort signal. Where only a model id fits (per-role model slots: weak/background vs main), use the catalog ids `di-fast` / `di-max` — the same model with effort pinned. Details: `https://docs.directinference.com/effort/`
 - **Per-app usage attribution** — send `X-Title: <app name>` to segment the usage dashboard by application (otherwise it falls back to the API key's name). Details: `https://docs.directinference.com/usage/`
 - **Prompt caching** — `cache_control: {"type": "ephemeral"}` breakpoints on a stable prefix cut cost and time-to-first-token; native on the Anthropic surface, accepted on OpenAI-surface content parts too. Details: `https://docs.directinference.com/caching/`
 - **Spend caps** — suggest the user set a per-key or account cap at `https://app.directinference.com/api-keys` / billing settings; the cap returns a deliberate `402` when reached. Details: `https://docs.directinference.com/spend/`
