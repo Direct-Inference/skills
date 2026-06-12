@@ -410,6 +410,7 @@ After `verify.sh` passes, run whatever test command the project already has (`py
 | Response has no `X-DI-Request-Type` header, or `model` is not the id you sent | The call landed on the old provider, or on `/v1/*` instead of `/di/v1/*` | Check the base URL actually took effect (env loaded? config cached?) and that the path includes `/di` |
 | `413` | Request body over the 32 MB limit | Trim the payload, e.g. drop oversized inline files |
 | `429` | Pressure on the endpoint serving the request — transient | Retry with exponential backoff and jitter |
+| Stream looks stalled before the first token, then the answer arrives in a burst | Responses can include reasoning: `delta.reasoning` chunks stream **before** the first `delta.content` (non-stream: `message.reasoning`, a string or `null`) | Not a hang — render `delta.reasoning` as a thinking indicator or ignore it; lower effort to spend less time thinking. Details: `https://docs.directinference.com/openai/#reasoning-output` |
 | Streaming hangs in production but works locally | Reverse proxy (nginx, Cloudflare, ALB) is buffering SSE | Disable response buffering for the DirectInference route |
 | Existing test suite fails because it mocks `api.openai.com` | The host changed | Update the mock host to `api.directinference.com` — mock URL paths stay the same |
 
@@ -419,4 +420,5 @@ After `verify.sh` passes, run whatever test command the project already has (`py
 - Never put the API key in tracked files. If you see one in code or in committed config, flag it and ask the user where to relocate it before continuing.
 - Rollback is trivial: revert the base URL and key. No other code changes are involved.
 - Unknown or future model ids are accepted; you do not need to maintain a model-id allowlist when migrating.
+- Responses may carry the reasoning behind the answer in one canonical field — `message.reasoning` non-stream, `delta.reasoning` on streams (never `reasoning_content`). It is additive and safe to ignore; surface it only in UIs that have a thinking view.
 - Configuring a settings form (Cursor, an IDE, a "bring your own model" screen) rather than code? Field-by-field instructions: `https://docs.directinference.com/custom-providers/`. Pointing a CLI/coding agent via env vars: `https://docs.directinference.com/agents/`.
