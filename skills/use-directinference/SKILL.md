@@ -11,7 +11,7 @@ DirectInference is one endpoint that speaks three wire formats — OpenAI, Anthr
 2. Authenticate with one `llm_live_*` key. The same key works on every surface.
 3. Keep every `model` string the code already sends — any id is accepted (legacy, renamed, or not-yet-released, never a 404) and is echoed back verbatim in the response.
 
-Nothing else changes: prompts, streaming, tools/function calling, JSON mode, image input, PDF input, sampling parameters, and error handling all stay as they are. DirectInference serves each request with the right capability automatically; the caller never learns or manages the model behind it. **Do not describe internal model selection or backends to the user** — the one visible signal is the request type (see Verify).
+Nothing else changes: prompts, streaming, function calling (client-defined tools), JSON mode, image input, PDF input, sampling parameters, and error handling all stay as they are. The one exception: provider **server-side tools** (web search/grounding, code execution, URL context) are not served — see the Not-served table. DirectInference serves each request with the right capability automatically; the caller never learns or manages the model behind it. **Do not describe internal model selection or backends to the user** — the one visible signal is the request type (see Verify).
 
 For anything beyond this skill, the docs are written for agents: `https://docs.directinference.com` — machine-readable index at `https://docs.directinference.com/llms.txt` (expanded: `https://directinference.com/llms-full.txt`).
 
@@ -41,12 +41,13 @@ Auth: the OpenAI surface takes `Authorization: Bearer <key>`; the Anthropic surf
 | Model list (OpenAI shape; Anthropic shape with `anthropic-version` header) | `GET /di/v1/models` |
 | Gemini generate / stream / count / list | `POST /di/v1beta/models/{model}:generateContent`, `:streamGenerateContent?alt=sse`, `:countTokens`; `GET /di/v1beta/models` |
 
-**Not served** — any other path 404s. Handle these call sites explicitly instead of breaking them:
+**Not served** — any other path 404s, and a few request shapes on served paths are rejected at request time. Handle these call sites explicitly instead of breaking them:
 
 | Call shape in the code | What to do |
 |---|---|
 | OpenAI Responses API — `client.responses.create(...)`, `POST /responses` | Two options: rewrite the call site to Chat Completions (different request/response field names — a real edit, confirm with the user), or leave those calls on OpenAI with their original key. In Vercel AI SDK ≥5 this is trivial instead: `provider("id")` defaults to the Responses API, so use `provider.chat("id")` — see the recipe. |
 | Embeddings — `client.embeddings.create(...)`, `OpenAIEmbeddings` | Keep on the original provider with its original key (split clients if needed). |
+| Provider server-side tools — Gemini `googleSearch` / `googleSearchRetrieval` / `urlContext` / `codeExecution`; Anthropic `web_search` / `code_execution`; OpenAI `web_search` tool types; framework builtins that compile to them (PydanticAI `builtin_tools` / `WebSearchTool`, `@ai-sdk/google` provider tools, LangChain grounding tools) | Keep those call sites on the original provider with their original key. Client-defined function tools are fully served. |
 | Images, audio, moderations, batches, files, fine-tuning | Keep on the original provider. |
 
 A migration is still worth doing when only the chat/messages traffic moves — say so in the plan rather than leaving the repo silently half-swapped.
@@ -90,6 +91,10 @@ grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' -
 grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
   -E 'responses\.create|client\.responses|embeddings\.create|OpenAIEmbeddings|images\.generate|audio\.(speech|transcriptions)|moderations' .
 
+# Provider server-side tools (NOT served — keep these call sites on the original provider)
+grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+  -E 'WebSearchTool|builtin_tools|googleSearch|google_search|urlContext|url_context|codeExecution|code_execution|web_search' .
+
 # Direct HTTP to provider hosts (and any existing DirectInference usage)
 grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.sh' --include='*.json' \
   -E 'api\.openai\.com|api\.anthropic\.com|generativelanguage\.googleapis\.com|directinference\.com' .
@@ -99,7 +104,9 @@ grep -RIn --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' -
   -E 'OPENAI_API_KEY|OPENAI_BASE_URL|OPENAI_API_BASE|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|GOOGLE_API_KEY|GEMINI_API_KEY|DIRECTINFERENCE_API_KEY' .
 ```
 
-For each hit note: file and line; where the client is constructed (the line taking `api_key=` / `apiKey:` / `base_url=` / `baseURL:`); which env var the key reads from; which model strings appear; and any hits from the "not served" grep.
+For each hit note: file and line; where the client is constructed (the line taking `api_key=` / `apiKey:` / `base_url=` / `baseURL:`); which env var the key reads from; which model strings appear; and any hits from the "not served" and server-side-tool greps.
+
+The greps catch what is statically visible — config-driven model strings and framework indirection can hide a shape until runtime. That is expected: detection here is the first layer, not the only one. The endpoint rejects unsupported shapes at request time with an error naming the offending element, and step 4's verification exercises the real migrated shapes.
 
 ### Step 2 — Choose the strategy and confirm
 
@@ -124,8 +131,8 @@ Then summarize back to the user before editing:
 
 - The files that will change (with line numbers), or the env vars to set.
 - The chosen env var name (default `DIRECTINFERENCE_API_KEY`).
-- That all `model=` strings, prompts, parameters, streaming, and tool definitions stay verbatim.
-- Any call sites DirectInference does not serve (Responses API, embeddings, images/audio) and how each will be handled.
+- That all `model=` strings, prompts, parameters, streaming, and client-defined tool definitions stay verbatim.
+- Any call sites DirectInference does not serve (Responses API, embeddings, images/audio, provider server-side tools) and how each will be handled.
 
 For a small inventory (≤2 files) you can proceed without an explicit confirmation prompt. For broader changes — or any Responses-API rewrite — confirm first.
 
@@ -262,7 +269,7 @@ For Anthropic-prefixed models use `model="anthropic/claude-sonnet-4-6"` and `api
 
 #### Recipe — Gemini native (Google GenAI SDK)
 
-A true one-line drop-in: change the base URL and the key, keep the `gemini-*` model id. `generateContent`, `streamGenerateContent` (with `?alt=sse`), `countTokens`, function calling, `inlineData` images, JSON mode (`responseMimeType` / `responseSchema`), and thinking config all work unchanged.
+A true one-line drop-in: change the base URL and the key, keep the `gemini-*` model id. `generateContent`, `streamGenerateContent` (with `?alt=sse`), `countTokens`, function calling (client `functionDeclarations` — Gemini server-side tools like `googleSearch` are not served; see the Not-served table), `inlineData` images, JSON mode (`responseMimeType` / `responseSchema`), and thinking config all work unchanged.
 
 Python — unified SDK (`from google import genai`):
 
@@ -349,6 +356,30 @@ print(resp.choices[0].message.content)
 
 There is no model catalog to browse or keep current — the model id is read as intent, so send `"di"` or whatever id the team is used to.
 
+#### Recipe — config-driven model routing (factories, registries, `provider:model` strings)
+
+Production codebases often construct clients through a factory or registry keyed by config (PydanticAI / LiteLLM-style `provider:model` strings, per-stage model settings) rather than one constructor per SDK. Swap those at a single resolver choke point instead of editing every call site:
+
+```python
+import os
+
+DI_KEY = os.environ.get("DIRECTINFERENCE_API_KEY")
+DI_ON = os.environ.get("DIRECTINFERENCE_ENABLED", "true").lower() != "false" and bool(DI_KEY)
+
+def resolve_client(spec: str):
+    """provider:model -> (client, model). The one place routing changes."""
+    provider, _, model = spec.partition(":")
+    if DI_ON and provider == "openai":
+        return OpenAI(base_url="https://api.directinference.com/di/v1", api_key=DI_KEY), model
+    if DI_ON and provider == "anthropic":
+        return Anthropic(base_url="https://api.directinference.com/di", api_key=DI_KEY), model
+    return original_client(provider), model  # passthrough: original provider, original key
+```
+
+- Route to the passthrough branch (original provider, original key) for anything in the Not-served table — server-side-tool agents, embeddings — and for model objects you can't classify statically.
+- The kill switch (`DIRECTINFERENCE_ENABLED=false`) makes rollback a config change, not a code revert.
+- Apply the resolver where clients/agents are constructed, and state explicitly in your summary which call sites moved and which stayed on the original provider — never leave a repo silently half-swapped.
+
 #### Optional, after the swap works
 
 Each is one line; offer them, don't push them:
@@ -370,7 +401,7 @@ Do not write the real key anywhere tracked by git. Tell the user where to put it
 
 ### Step 4 — Verify
 
-Use the `verify.sh` script bundled with this skill. It pings every surface and asserts two things per call: the response echoes the model id you sent, and the response carries the `X-DI-Request-Type` header. The header is the definitive signal — only DirectInference sets it, so its presence proves the request didn't quietly land on the original provider (model echo alone can false-pass for ids the original provider also serves).
+Use the `verify.sh` script bundled with this skill. It checks every surface, asserting per call that the response echoes the model id you sent and carries the `X-DI-Request-Type` header — then runs three capability checks: a forced function-tool call on the OpenAI surface, a forced `functionCall` on the Gemini surface (asserting the returned arguments are clean, parseable JSON), and that a provider server-side tool (`googleSearch`) is rejected with a descriptive `400`. The header is the definitive signal — only DirectInference sets it, so its presence proves the request didn't quietly land on the original provider (model echo alone can false-pass for ids the original provider also serves).
 
 ```bash
 DIRECTINFERENCE_API_KEY=llm_live_... bash skills/use-directinference/verify.sh
@@ -388,8 +419,11 @@ PASS  openai shape — model echoed (gpt-5.5-mini), request type: flash
 PASS  anthropic shape — model echoed (claude-sonnet-4-6), request type: flash
 PASS  streaming — OpenAI SSE completed, request type: flash
 PASS  gemini shape — model echoed (gemini-2.5-flash), request type: flash
+PASS  openai forced tool — get_weather called with clean args, request type: code
+PASS  gemini forced tool — functionCall returned with clean args, request type: code
+PASS  rejection quality — googleSearch rejected with a descriptive 400
 
-PASSED  5/5 checks
+PASSED  8/8 checks
 ```
 
 (The request-type values vary with the prompt — any value passes; the assertion is presence.)
@@ -407,6 +441,7 @@ After `verify.sh` passes, run whatever test command the project already has (`py
 | `404` on `/responses` | OpenAI Responses API is not served | Use Chat Completions; in Vercel AI SDK use `provider.chat("id")` |
 | `404` on `/embeddings` | Embeddings are not served | Keep embeddings calls on the original provider |
 | `404` on a `gemini-*` id from the unified Google GenAI SDK | Base URL included `/v1beta` (the SDK appends it too → `…/v1beta/v1beta/…`) | Use `…/di` for `google-genai` / `@google/genai`; `…/di/v1beta` only for `@ai-sdk/google` |
+| `400` naming a tool — `server-side tool "googleSearch" … is not supported` | The call uses a provider server-side tool (web search/grounding, code execution, URL context) — not served, rejected at request time | Keep that call site on the original provider with its original key; client-defined function tools are fully served |
 | Response has no `X-DI-Request-Type` header, or `model` is not the id you sent | The call landed on the old provider, or on `/v1/*` instead of `/di/v1/*` | Check the base URL actually took effect (env loaded? config cached?) and that the path includes `/di` |
 | `413` | Request body over the 32 MB limit | Trim the payload, e.g. drop oversized inline files |
 | `429` | Pressure on the endpoint serving the request — transient | Retry with exponential backoff and jitter |
