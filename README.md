@@ -9,6 +9,7 @@ A skill is a folder with a `SKILL.md` an agent can read and execute — the port
 | Skill | What it does |
 | --- | --- |
 | [`use-directinference`](skills/use-directinference/SKILL.md) | Swap an existing OpenAI, Anthropic, or Gemini integration to DirectInference (or wire up a fresh one): inventory the call sites, apply the base-URL-and-key change, leave model ids untouched, and prove the result end-to-end with the bundled `verify.sh`. |
+| [`directinference-librechat`](skills/directinference-librechat/SKILL.md) | Add DirectInference to a [LibreChat](https://www.librechat.ai/) instance as a custom endpoint: write the `librechat.yaml` block, wire the `.env` var and Docker mount, and prove the live request sequence with the bundled `verify.sh`. |
 
 ## Install
 
@@ -34,7 +35,9 @@ cp -R skills/skills/use-directinference /path/to/your-project/.claude/skills/
 https://raw.githubusercontent.com/Direct-Inference/skills/main/skills/use-directinference/SKILL.md
 ```
 
-Once installed, just tell your agent "switch this app to DirectInference" — the skill triggers on its description. The only input it needs is a DirectInference API key (`llm_live_…`), issued on the [API Keys](https://app.directinference.com/api-keys) page.
+Replace `use-directinference` with `directinference-librechat` in any command above to install the LibreChat skill instead.
+
+Once installed, just tell your agent what you want — "switch this app to DirectInference", or "add DirectInference to LibreChat" — and the matching skill triggers on its description. The only input either needs is a DirectInference API key (`llm_live_…`), issued on the [API Keys](https://app.directinference.com/api-keys) page.
 
 ## Verify a finished integration
 
@@ -43,6 +46,12 @@ DIRECTINFERENCE_API_KEY=llm_live_... bash skills/use-directinference/verify.sh
 ```
 
 Five checks: key validity (no tokens spent), the OpenAI, Anthropic, and Gemini wire shapes, and SSE streaming — each asserting your model id is echoed back and the response carries the `X-DI-Request-Type` header that only DirectInference sets.
+
+For a LibreChat integration, `directinference-librechat` ships its own smoke that replays LibreChat's request sequence — model discovery, streaming chat, the title-generation completion, the default parameter set, and the custom-header path:
+
+```bash
+DIRECTINFERENCE_API_KEY=llm_live_... bash skills/directinference-librechat/verify.sh
+```
 
 ## Docs
 
