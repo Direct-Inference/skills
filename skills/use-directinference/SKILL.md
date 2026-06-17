@@ -380,6 +380,102 @@ def resolve_client(spec: str):
 - The kill switch (`DIRECTINFERENCE_ENABLED=false`) makes rollback a config change, not a code revert.
 - Apply the resolver where clients/agents are constructed, and state explicitly in your summary which call sites moved and which stayed on the original provider — never leave a repo silently half-swapped.
 
+#### Recipe — OpenClaw (self-hosted agent gateway)
+
+OpenClaw is a self-hosted gateway that runs one embedded agent and is model-agnostic, so DirectInference plugs in as a custom OpenAI-compatible provider. Add it to `~/.openclaw/openclaw.json` (JSON5) and register the ids — OpenClaw routes only to models it knows, and `di` is on no built-in list:
+
+```json5
+{
+  models: {
+    providers: {
+      directinference: {
+        baseUrl: "https://api.directinference.com/di/v1",
+        apiKey: "${DIRECTINFERENCE_API_KEY}",   // env substitution — never inline a key
+        api: "openai-completions",
+        models: [
+          { id: "di",       name: "DirectInference",       input: ["text", "image"] },
+          { id: "di-saver", name: "DirectInference Saver", input: ["text", "image"] },
+          { id: "di-max",   name: "DirectInference Max",   input: ["text", "image"] },
+        ],
+      },
+    },
+  },
+  agents: { defaults: { model: "directinference/di" } },
+}
+```
+
+Then point the agent at DI:
+
+```bash
+export DIRECTINFERENCE_API_KEY=llm_live_...   # provider id -> <PROVIDER>_API_KEY (OPENCLAW_LIVE_DIRECTINFERENCE_KEY overrides)
+openclaw models list                          # confirms OpenClaw registered directinference/di from your config
+openclaw models set directinference/di
+```
+
+- **Keep the `/v1`** — the `openai-completions` adapter posts to `{baseUrl}/chat/completions`; do not strip it (unlike the Anthropic recipes).
+- **Register the id under the provider's `models[]`** — OpenClaw routes only to ids it knows, and `agents.defaults.models` is an allowlist layer, not a substitute for the `models[]` entry.
+- **`di-saver` / `di-max`** map to an agent's fast / smart model slots (the same model, effort pinned low / high).
+- **Tools are automatic** once a model is registered; capability is a property of the request shape, not the id, so there is no name-based detection to fight. The `tools.profile` (e.g. `"coding"`) controls which built-in tools an agent may use.
+
+Verify with `verify.sh` below (it proves the DI OpenAI surface and the tool-call shape OpenClaw relies on), then `openclaw models list` to confirm OpenClaw registered `directinference/di`.
+
+#### Recipe — Hermes Agent (Nous Research)
+
+Hermes is a self-hosted, self-improving autonomous agent. It is model-agnostic and OpenAI-compatible. Add DI in `~/.hermes/config.yaml` using the named `custom_providers` form with `key_env` (keeps the key out of the file):
+
+```yaml
+custom_providers:
+  - name: directinference
+    base_url: https://api.directinference.com/di/v1   # keep the /v1
+    key_env: DIRECTINFERENCE_API_KEY                  # env var that holds the key
+
+model:
+  default: di                        # any id; sent straight to DI, echoed back
+  provider: custom:directinference   # use the named provider above
+  supports_vision: true              # DI routes image requests to a vision model
+```
+
+Then put the key in `~/.hermes/.env` (or export it) and check it with a scripted one-shot:
+
+```bash
+export DIRECTINFERENCE_API_KEY=llm_live_...
+hermes -z "Reply with exactly: PONG"   # one-shot: prompt in, final answer text out
+```
+
+- **No server-side tool flags** — `--jinja` / `--tool-call-parser` are for raw self-hosted inference servers; DI returns native OpenAI tool calls, so Hermes's tool loop works as-is.
+- **Model id is passed through, not validated** — `provider: custom:…` sends `default`/`model` straight to DI, so `di` / `di-saver` / `di-max` work unchanged.
+- **Key via `key_env`, not `${VAR}`** — Hermes has no `${VAR}` config substitution; name the env var in `key_env` (read from `~/.hermes/.env`).
+- **Isolate with `HERMES_HOME`** (default `~/.hermes`), not a `--config` flag — point it at a throwaway dir for a clean test profile.
+
+#### Recipe — NemoClaw (NVIDIA secure sandbox)
+
+NemoClaw runs agents like OpenClaw and Hermes inside an NVIDIA OpenShell sandbox. Integrate DI at the inference-provider level — the gateway holds the key, so it never enters the sandbox:
+
+```bash
+openshell provider create \
+  --name directinference \
+  --type openai \
+  --credential OPENAI_API_KEY="$DIRECTINFERENCE_API_KEY" \
+  --config OPENAI_BASE_URL=https://api.directinference.com/di/v1
+nemoclaw inference set   # select directinference + a model id (e.g. di)
+```
+
+- **Include the `/v1`** — OpenShell does not auto-append it; use `…/di/v1`.
+- **Key via `--credential`, base URL via `--config`** — secrets go through `--credential` (stored host-side, never in the sandbox); a same-named exported env var takes precedence.
+- **Model id is passed through, not validated** for a compatible endpoint, so `di` / `di-saver` / `di-max` work.
+- **Egress:** allow `api.directinference.com` if outbound network is restricted.
+
+#### Recipe — Odysseus (self-hosted AI workspace)
+
+Odysseus (FastAPI; chat, agents, research, tools) connects to any OpenAI-compatible API. Configure DI in the app — there is no `OPENAI_BASE_URL` env to pre-seed a custom endpoint, so use the UI:
+
+- **Settings → Providers** → add a custom OpenAI-compatible provider.
+- **Base URL** — `https://api.directinference.com/di/v1` (keep the `/v1`).
+- **API key** — `llm_live_...`.
+- **Model** — Odysseus probes `/di/v1/models` to fill the picker; pick `di`, or type any id (`di-saver` / `di-max` pin effort). Ids are not validated and are echoed back.
+
+For scripting, the `POST /api/v1/chat` webhook accepts the provider inline (`base_url` + `api_key` + `model`) with a chat-scoped `ody_` token from **Settings → Integrations** — route one request through DI with no stored provider config.
+
 #### Optional, after the swap works
 
 Each is one line; offer them, don't push them:
