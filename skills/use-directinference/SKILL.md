@@ -45,7 +45,7 @@ Auth: the OpenAI surface takes `Authorization: Bearer <key>`; the Anthropic surf
 
 | Call shape in the code | What to do |
 |---|---|
-| OpenAI Responses API — `client.responses.create(...)`, `POST /responses` | Two options: rewrite the call site to Chat Completions (different request/response field names — a real edit, confirm with the user), or leave those calls on OpenAI with their original key. In Vercel AI SDK ≥5 this is trivial instead: `provider("id")` defaults to the Responses API, so use `provider.chat("id")` — see the recipe. |
+| OpenAI Responses API — `client.responses.create(...)`, `POST /responses` | **Served** at `/di/v1/responses` (stateless) — keep the call site, point the base URL + key at DirectInference. The stateful subset is rejected with a typed 400: `previous_response_id`, `background`, `conversation`, `prompt` templates, plus hosted tools (`web_search`/`file_search`/`code_interpreter`/`computer_use_preview`/`image_generation`/`mcp`); `store:true` is honored as `store:false`. Send the full conversation in `input` each turn. In Vercel AI SDK ≥5, `provider("id")` (Responses default) works as-is, or use `provider.chat("id")` for Chat Completions. |
 | Embeddings — `client.embeddings.create(...)`, `OpenAIEmbeddings` | Keep on the original provider with its original key (split clients if needed). |
 | Provider server-side tools — Gemini `googleSearch` / `googleSearchRetrieval` / `urlContext` / `codeExecution`; Anthropic `web_search` / `code_execution`; OpenAI `web_search` tool types; framework builtins that compile to them (PydanticAI `builtin_tools` / `WebSearchTool`, `@ai-sdk/google` provider tools, LangChain grounding tools) | Keep those call sites on the original provider with their original key. Client-defined function tools are fully served. |
 | Images, audio, moderations, batches, files, fine-tuning | Keep on the original provider. |
@@ -135,7 +135,7 @@ Then summarize back to the user before editing:
 - The files that will change (with line numbers), or the env vars to set.
 - The chosen env var name (default `DIRECTINFERENCE_API_KEY`).
 - That all `model=` strings, prompts, parameters, streaming, and client-defined tool definitions stay verbatim.
-- Any call sites DirectInference does not serve (Responses API, embeddings, images/audio, provider server-side tools) and how each will be handled.
+- Any call sites DirectInference does not serve (embeddings, images/audio, provider server-side tools) and how each will be handled. (The Responses API *is* served — statelessly; only its stateful subset + hosted tools are rejected.)
 
 For a small inventory (≤2 files) you can proceed without an explicit confirmation prompt. For broader changes — or any Responses-API rewrite — confirm first.
 
@@ -199,7 +199,7 @@ const client = new Anthropic({
 
 #### Recipe — Vercel AI SDK
 
-For `@ai-sdk/openai` — **always select the chat surface explicitly**: in AI SDK ≥5, `provider("id")` defaults to the OpenAI Responses API, which DirectInference does not serve.
+For `@ai-sdk/openai` — in AI SDK ≥5, `provider("id")` defaults to the OpenAI Responses API, which DirectInference now serves statelessly, so it works as a drop-in. Prefer `provider.chat("id")` if you want to pin Chat Completions (the longest-tested surface); the example below uses `.chat(...)`.
 
 ```ts
 import { createOpenAI } from "@ai-sdk/openai";
@@ -537,7 +537,7 @@ After `verify.sh` passes, run whatever test command the project already has (`py
 | `402` | Balance exhausted or a spend cap reached — deliberate, will not clear on retry | Top up / raise the cap at `https://app.directinference.com/billing`, then retry |
 | `404` on `/v1/messages` from the Anthropic SDK | Base URL was set to `…/di/v1` instead of `…/di` | Drop the trailing `/v1` — the SDK appends it itself |
 | `404` on `/chat/completions` from the OpenAI SDK | Base URL is missing `/di/v1` | Full base URL is `https://api.directinference.com/di/v1` |
-| `404` on `/responses` | OpenAI Responses API is not served | Use Chat Completions; in Vercel AI SDK use `provider.chat("id")` |
+| `400 unsupported_parameter` on `/responses` (`previous_response_id` / `background` / `conversation` / `prompt`) | The Responses API is served but **stateless** — these keep server-side conversation state | Send the full conversation in `input` each turn; the surface keeps no state. (`store:true` is silently honored as `store:false`.) |
 | `404` on `/embeddings` | Embeddings are not served | Keep embeddings calls on the original provider |
 | `404` on a `gemini-*` id from the unified Google GenAI SDK | Base URL included `/v1beta` (the SDK appends it too → `…/v1beta/v1beta/…`) | Use `…/di` for `google-genai` / `@google/genai`; `…/di/v1beta` only for `@ai-sdk/google` |
 | `400` naming a tool — `server-side tool "googleSearch" … is not supported` | The call uses a provider server-side tool (web search/grounding, code execution, URL context) — not served, rejected at request time | Keep that call site on the original provider with its original key; client-defined function tools are fully served |

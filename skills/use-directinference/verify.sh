@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh — post-swap smoke for the DirectInference drop-in endpoint.
 #
-# Runs eight quick checks:
+# Runs nine quick checks:
 #   0. GET /di/v1/models — proves the host and API key before spending tokens.
 #   1. OpenAI-shape ping — response echoes the model id sent.
 #   2. Anthropic-shape ping — same echo assertion.
@@ -16,6 +16,8 @@
 #      fallback wrapper (an `_raw` key marks an unusable tool call).
 #   7. Rejection quality — a provider server-side tool (googleSearch) must be
 #      rejected with a descriptive 400, not accepted or mangled.
+#   8. OpenAI Responses-shape ping — client.responses.create returns a
+#      Response object that echoes the model id sent.
 #
 # Checks 1–6 also assert the response carries the X-DI-Request-Type header.
 # Only DirectInference sets that header, so its presence proves the request
@@ -359,6 +361,27 @@ else
   bad "rejection quality — HTTP $code (expected 400 naming googleSearch with 'not supported')"
   echo "    response head:" >&2
   sed -n '1,5p' "$work/reject.json" >&2 || true
+fi
+
+# ---------------------------------------------------------------------------
+# 8. OpenAI Responses-shape ping — POST /di/v1/responses
+#
+# The Responses API is served statelessly. A plain client.responses.create
+# must return a Responses-shaped object that echoes the model id sent.
+# ---------------------------------------------------------------------------
+code=$(curl -sS -D "$work/responses.h" -o "$work/responses.json" -w '%{http_code}' \
+  "$HOST/di/v1/responses" \
+  -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"di","input":"Reply with exactly PONG.","max_output_tokens":64}' || echo "000")
+
+rt=$(request_type "$work/responses.h")
+if [[ "$code" == "200" && -n "$rt" ]] && grep -q '"object":"response"' "$work/responses.json" && grep -q '"model":"di"' "$work/responses.json"; then
+  ok "responses shape — Response object returned, model echoed (di), request type: $rt"
+else
+  bad "responses shape — HTTP $code (expected 200 with object:\"response\", model:\"di\", and an X-DI-Request-Type header; got type: '${rt:-none}')"
+  echo "    response head:" >&2
+  sed -n '1,5p' "$work/responses.json" >&2 || true
 fi
 
 echo
