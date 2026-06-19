@@ -13,7 +13,7 @@ DirectInference is one endpoint that speaks three wire formats — OpenAI, Anthr
 
 Nothing else changes: prompts, streaming, function calling (client-defined tools), JSON mode, image input, PDF input, sampling parameters, and error handling all stay as they are. The one exception: provider **server-side tools** (web search/grounding, code execution, URL context) are not served — see the Not-served table. DirectInference serves each request with the right capability automatically; the caller never learns or manages the model behind it. **Do not describe internal model selection or backends to the user** — the one visible signal is the request type (see Verify).
 
-For anything beyond this skill, the docs are written for agents: `https://docs.directinference.com` — machine-readable index at `https://docs.directinference.com/llms.txt` (expanded: `https://directinference.com/llms-full.txt`).
+For anything beyond this skill, the docs are written for agents: `https://docs.directinference.com` — self-contained machine-readable index at `https://docs.directinference.com/llms.txt` (expanded: `https://docs.directinference.com/llms-full.txt`).
 
 ## Base URLs
 
@@ -120,9 +120,12 @@ Two ways to apply the swap:
   export OPENAI_BASE_URL="https://api.directinference.com/di/v1"
   export OPENAI_API_KEY="$DIRECTINFERENCE_API_KEY"
 
-  # Anthropic SDKs and Anthropic-compatible tools
+  # Anthropic SDKs and Anthropic-compatible tools (e.g. Claude Code).
+  # Use ANTHROPIC_AUTH_TOKEN (sends the key as a Bearer token, which DI
+  # accepts) and leave ANTHROPIC_API_KEY unset — there's no empty-key
+  # workaround to remember.
   export ANTHROPIC_BASE_URL="https://api.directinference.com/di"
-  export ANTHROPIC_API_KEY="$DIRECTINFERENCE_API_KEY"
+  export ANTHROPIC_AUTH_TOKEN="$DIRECTINFERENCE_API_KEY"
   ```
 
   Only choose env-only when every deploy environment (local, CI, prod) gets the vars; otherwise it "works on my machine" and silently falls back to the old provider elsewhere.
