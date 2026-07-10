@@ -6,7 +6,7 @@
 # the requests a LibreChat instance actually issues, in order:
 #
 #   0. GET /di/v1/models      — model discovery (models.fetch: true). Asserts
-#      the catalog lists di, di-saver, di-max so the selector is populated.
+#      the catalog lists di-fusion, di-saver, di-max so the selector is populated.
 #      Spends no tokens, so it fails fast on a bad host/key.
 #   1. Streaming chat          — every user message: POST stream:true. Confirms
 #      SSE survives the round trip (catches proxies that buffer/strip streams).
@@ -76,12 +76,12 @@ code=$(curl -sS -o "$work/models.json" -w '%{http_code}' \
   -H "Authorization: Bearer $KEY" || echo "000")
 
 if [[ "$code" == "200" ]] \
-   && grep -q '"di"' "$work/models.json" \
+   && grep -q '"di-fusion"' "$work/models.json" \
    && grep -q '"di-saver"' "$work/models.json" \
    && grep -q '"di-max"' "$work/models.json"; then
-  ok "model discovery — GET /di/v1/models lists di, di-saver, di-max"
+  ok "model discovery — GET /di/v1/models lists di-fusion, di-saver, di-max"
 else
-  bad "model discovery — HTTP $code (expected 200 listing di, di-saver, di-max)"
+  bad "model discovery — HTTP $code (expected 200 listing di-fusion, di-saver, di-max)"
   echo "    response head:" >&2
   sed -n '1,5p' "$work/models.json" >&2 || true
 fi
@@ -89,7 +89,7 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Streaming chat — POST /di/v1/chat/completions (stream:true)
 # ---------------------------------------------------------------------------
-chat_model="di"
+chat_model="di-fusion"
 chat_body=$(cat <<JSON
 {"model":"$chat_model","stream":true,"max_tokens":32,"messages":[{"role":"user","content":"Reply with exactly PONG."}]}
 JSON
@@ -147,7 +147,7 @@ fi
 # DirectInference accepts the standard OpenAI params and strips unknowns, so a
 # LibreChat config needs no `dropParams` to avoid a 400. This asserts that.
 # ---------------------------------------------------------------------------
-param_model="di"
+param_model="di-fusion"
 param_body=$(cat <<JSON
 {"model":"$param_model","max_tokens":32,"temperature":0.8,"top_p":1,"presence_penalty":0,"frequency_penalty":0,"stop":[],"user":"librechat-user-1","messages":[{"role":"user","content":"Reply with exactly PONG."}]}
 JSON
@@ -174,7 +174,7 @@ fi
 # X-Title (per-app usage attribution) + X-DI-Effort (cost/quality bias) must be
 # accepted and must not suppress the request-type header.
 # ---------------------------------------------------------------------------
-header_model="di"
+header_model="di-fusion"
 header_body=$(cat <<JSON
 {"model":"$header_model","max_tokens":32,"messages":[{"role":"user","content":"Reply with exactly PONG."}]}
 JSON

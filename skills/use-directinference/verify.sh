@@ -373,13 +373,13 @@ code=$(curl -sS -D "$work/responses.h" -o "$work/responses.json" -w '%{http_code
   "$HOST/di/v1/responses" \
   -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"di","input":"Reply with exactly PONG.","max_output_tokens":64}' || echo "000")
+  -d '{"model":"di-fusion","input":"Reply with exactly PONG.","max_output_tokens":64}' || echo "000")
 
 rt=$(request_type "$work/responses.h")
-if [[ "$code" == "200" && -n "$rt" ]] && grep -q '"object":"response"' "$work/responses.json" && grep -q '"model":"di"' "$work/responses.json"; then
-  ok "responses shape — Response object returned, model echoed (di), request type: $rt"
+if [[ "$code" == "200" && -n "$rt" ]] && grep -q '"object":"response"' "$work/responses.json" && grep -q '"model":"di-fusion"' "$work/responses.json"; then
+  ok "responses shape — Response object returned, model echoed (di-fusion), request type: $rt"
 else
-  bad "responses shape — HTTP $code (expected 200 with object:\"response\", model:\"di\", and an X-DI-Request-Type header; got type: '${rt:-none}')"
+  bad "responses shape — HTTP $code (expected 200 with object:\"response\", model:\"di-fusion\", and an X-DI-Request-Type header; got type: '${rt:-none}')"
   echo "    response head:" >&2
   sed -n '1,5p' "$work/responses.json" >&2 || true
 fi

@@ -9,7 +9,7 @@ LibreChat exposes DirectInference through its **custom endpoints** mechanism. Cu
 
 1. Base URL → `https://api.directinference.com/di/v1` (the OpenAI-compatible DI surface; LibreChat appends `/chat/completions` and `/models`).
 2. Auth → one `llm_live_*` key, referenced from the environment so it never lands in the config file.
-3. Models → `di`, `di-saver`, `di-max` (the whole catalog: one model, plus the same model with effort pinned low/high). LibreChat fetches them from `/models` when `models.fetch: true`.
+3. Models → `di-fusion`, `di-saver`, `di-max` (the whole catalog: one model, plus the same model with effort pinned low/high). LibreChat fetches them from `/models` when `models.fetch: true`.
 
 Everything LibreChat needs from a chat endpoint is served: streaming, client-defined function tools, vision (image input), document input, prompt caching, and the `titleConvo` title-generation completion. **Treat DirectInference as a black box** — any model id is accepted and echoed back, request handling is automatic, and the only classification signal you may surface is the request type (the `X-DI-Request-Type` response header). Never name or guess the model behind a response.
 
@@ -59,7 +59,7 @@ endpoints:
       apiKey: "${DIRECTINFERENCE_API_KEY}"
       baseURL: "https://api.directinference.com/di/v1"
       models:
-        default: ["di", "di-saver", "di-max"]
+        default: ["di-fusion", "di-saver", "di-max"]
         fetch: true
       titleConvo: true
       titleModel: "di-saver"
@@ -129,8 +129,8 @@ Adjust the path to wherever the skill lives. Successful output:
 ```
 base_url : https://api.directinference.com/di/v1
 
-PASS  model discovery — GET /di/v1/models lists di, di-saver, di-max
-PASS  streaming chat — OpenAI SSE completed, model echoed (di), request type: flash
+PASS  model discovery — GET /di/v1/models lists di-fusion, di-saver, di-max
+PASS  streaming chat — OpenAI SSE completed, model echoed (di-fusion), request type: flash
 PASS  title generation — non-stream completion, model echoed (di-saver), request type: flash
 PASS  default param set — temperature/top_p/penalties/stop/user accepted, request type: flash
 PASS  custom headers — X-Title + X-DI-Effort accepted, request type: flash

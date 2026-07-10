@@ -351,13 +351,13 @@ client = OpenAI(
     api_key=os.environ["DIRECTINFERENCE_API_KEY"],
 )
 resp = client.chat.completions.create(
-    model="di",   # any id works; "di" is neutral and lets the request shape decide
+    model="di-fusion",   # any id works; "di-fusion" is neutral and lets the request shape decide
     messages=[{"role": "user", "content": "..."}],
 )
 print(resp.choices[0].message.content)
 ```
 
-The model catalog is tiny and stable — `di`, plus `di-fast` / `di-max` (the *same* model with effort pinned low/high, there for tools with fast/smart model slots). The model id is read as intent, so send `"di"`, a pinned id, or whatever id the team is used to.
+The model catalog is tiny and stable — `di-fusion`, plus `di-saver` / `di-max` (the *same* model with effort pinned low/high, there for tools with fast/smart model slots). The model id is read as intent, so send `"di-fusion"`, a pinned id, or whatever id the team is used to.
 
 #### Recipe — config-driven model routing (factories, registries, `provider:model` strings)
 
@@ -385,7 +385,7 @@ def resolve_client(spec: str):
 
 #### Recipe — OpenClaw (self-hosted agent gateway)
 
-OpenClaw is a self-hosted gateway that runs one embedded agent and is model-agnostic, so DirectInference plugs in as a custom OpenAI-compatible provider. Add it to `~/.openclaw/openclaw.json` (JSON5) and register the ids — OpenClaw routes only to models it knows, and `di` is on no built-in list:
+OpenClaw is a self-hosted gateway that runs one embedded agent and is model-agnostic, so DirectInference plugs in as a custom OpenAI-compatible provider. Add it to `~/.openclaw/openclaw.json` (JSON5) and register the ids — OpenClaw routes only to models it knows, and `di-fusion` is on no built-in list:
 
 ```json5
 {
@@ -396,14 +396,14 @@ OpenClaw is a self-hosted gateway that runs one embedded agent and is model-agno
         apiKey: "${DIRECTINFERENCE_API_KEY}",   // env substitution — never inline a key
         api: "openai-completions",
         models: [
-          { id: "di",       name: "DirectInference",       input: ["text", "image"] },
-          { id: "di-saver", name: "DirectInference Saver", input: ["text", "image"] },
-          { id: "di-max",   name: "DirectInference Max",   input: ["text", "image"] },
+          { id: "di-fusion", name: "DirectInference",       input: ["text", "image"] },
+          { id: "di-saver",  name: "DirectInference Saver", input: ["text", "image"] },
+          { id: "di-max",    name: "DirectInference Max",   input: ["text", "image"] },
         ],
       },
     },
   },
-  agents: { defaults: { model: "directinference/di" } },
+  agents: { defaults: { model: "directinference/di-fusion" } },
 }
 ```
 
@@ -411,8 +411,8 @@ Then point the agent at DI:
 
 ```bash
 export DIRECTINFERENCE_API_KEY=llm_live_...   # provider id -> <PROVIDER>_API_KEY (OPENCLAW_LIVE_DIRECTINFERENCE_KEY overrides)
-openclaw models list                          # confirms OpenClaw registered directinference/di from your config
-openclaw models set directinference/di
+openclaw models list                          # confirms OpenClaw registered directinference/di-fusion from your config
+openclaw models set directinference/di-fusion
 ```
 
 - **Keep the `/v1`** — the `openai-completions` adapter posts to `{baseUrl}/chat/completions`; do not strip it (unlike the Anthropic recipes).
@@ -420,7 +420,7 @@ openclaw models set directinference/di
 - **`di-saver` / `di-max`** map to an agent's fast / smart model slots (the same model, effort pinned low / high).
 - **Tools are automatic** once a model is registered; capability is a property of the request shape, not the id, so there is no name-based detection to fight. The `tools.profile` (e.g. `"coding"`) controls which built-in tools an agent may use.
 
-Verify with `verify.sh` below (it proves the DI OpenAI surface and the tool-call shape OpenClaw relies on), then `openclaw models list` to confirm OpenClaw registered `directinference/di`.
+Verify with `verify.sh` below (it proves the DI OpenAI surface and the tool-call shape OpenClaw relies on), then `openclaw models list` to confirm OpenClaw registered `directinference/di-fusion`.
 
 #### Recipe — Hermes Agent (Nous Research)
 
@@ -433,7 +433,7 @@ custom_providers:
     key_env: DIRECTINFERENCE_API_KEY                  # env var that holds the key
 
 model:
-  default: di                        # any id; sent straight to DI, echoed back
+  default: di-fusion                 # any id; sent straight to DI, echoed back
   provider: custom:directinference   # use the named provider above
   supports_vision: true              # DI routes image requests to a vision model
 ```
@@ -446,7 +446,7 @@ hermes -z "Reply with exactly: PONG"   # one-shot: prompt in, final answer text 
 ```
 
 - **No server-side tool flags** — `--jinja` / `--tool-call-parser` are for raw self-hosted inference servers; DI returns native OpenAI tool calls, so Hermes's tool loop works as-is.
-- **Model id is passed through, not validated** — `provider: custom:…` sends `default`/`model` straight to DI, so `di` / `di-saver` / `di-max` work unchanged.
+- **Model id is passed through, not validated** — `provider: custom:…` sends `default`/`model` straight to DI, so `di-fusion` / `di-saver` / `di-max` work unchanged.
 - **Key via `key_env`, not `${VAR}`** — Hermes has no `${VAR}` config substitution; name the env var in `key_env` (read from `~/.hermes/.env`).
 - **Isolate with `HERMES_HOME`** (default `~/.hermes`), not a `--config` flag — point it at a throwaway dir for a clean test profile.
 
@@ -460,12 +460,12 @@ openshell provider create \
   --type openai \
   --credential OPENAI_API_KEY="$DIRECTINFERENCE_API_KEY" \
   --config OPENAI_BASE_URL=https://api.directinference.com/di/v1
-nemoclaw inference set   # select directinference + a model id (e.g. di)
+nemoclaw inference set   # select directinference + a model id (e.g. di-fusion)
 ```
 
 - **Include the `/v1`** — OpenShell does not auto-append it; use `…/di/v1`.
 - **Key via `--credential`, base URL via `--config`** — secrets go through `--credential` (stored host-side, never in the sandbox); a same-named exported env var takes precedence.
-- **Model id is passed through, not validated** for a compatible endpoint, so `di` / `di-saver` / `di-max` work.
+- **Model id is passed through, not validated** for a compatible endpoint, so `di-fusion` / `di-saver` / `di-max` work.
 - **Egress:** allow `api.directinference.com` if outbound network is restricted.
 
 #### Recipe — Odysseus (self-hosted AI workspace)
@@ -475,7 +475,7 @@ Odysseus (FastAPI; chat, agents, research, tools) connects to any OpenAI-compati
 - **Settings → Providers** → add a custom OpenAI-compatible provider.
 - **Base URL** — `https://api.directinference.com/di/v1` (keep the `/v1`).
 - **API key** — `llm_live_...`.
-- **Model** — Odysseus probes `/di/v1/models` to fill the picker; pick `di`, or type any id (`di-saver` / `di-max` pin effort). Ids are not validated and are echoed back.
+- **Model** — Odysseus probes `/di/v1/models` to fill the picker; pick `di-fusion`, or type any id (`di-saver` / `di-max` pin effort). Ids are not validated and are echoed back.
 
 For scripting, the `POST /api/v1/chat` webhook accepts the provider inline (`base_url` + `api_key` + `model`) with a chat-scoped `ody_` token from **Settings → Integrations** — route one request through DI with no stored provider config.
 
@@ -483,7 +483,7 @@ For scripting, the `POST /api/v1/chat` webhook accepts the provider inline (`bas
 
 Each is one line; offer them, don't push them:
 
-- **Effort** — one knob to bias any call toward cost/latency or quality: request header `X-DI-Effort: fast | minimal | low | medium | high | xhigh | max` (omit for auto; `none` is accepted as an alias for `fast`), settable once as an SDK default header; `?effort=` query param also works. Existing `reasoning_effort` / thinking-budget fields are already read as the effort signal. Where only a model id fits (per-role model slots: weak/background vs main), use the catalog ids `di-fast` / `di-max` — the same model with effort pinned. Details: `https://docs.directinference.com/effort/`
+- **Effort** — one knob to bias any call toward cost/latency or quality: request header `X-DI-Effort: fast | minimal | low | medium | high | xhigh | max` (omit for auto; `none` is accepted as an alias for `fast`), settable once as an SDK default header; `?effort=` query param also works. Existing `reasoning_effort` / thinking-budget fields are already read as the effort signal. Where only a model id fits (per-role model slots: weak/background vs main), use the catalog ids `di-saver` / `di-max` — the same model with effort pinned. Details: `https://docs.directinference.com/effort/`
 - **Per-app usage attribution** — send `X-Title: <app name>` to segment the usage dashboard by application (otherwise it falls back to the API key's name). Details: `https://docs.directinference.com/usage/`
 - **Prompt caching** — `cache_control: {"type": "ephemeral"}` breakpoints on a stable prefix cut cost and time-to-first-token; native on the Anthropic surface, accepted on OpenAI-surface content parts too. Details: `https://docs.directinference.com/caching/`
 - **Spend caps** — suggest the user set a per-key or account cap at `https://app.directinference.com/api-keys` / billing settings; the cap returns a deliberate `402` when reached. Details: `https://docs.directinference.com/spend/`
